@@ -1,0 +1,15 @@
+{
+  "name": "triarchy",
+  "productName": "Triarchy",
+  "version": "1.0.0",
+  "description": "ChatGPT, Claude, Gemini를 3칸으로 나란히 쓰는 데스크톱 앱",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack:win": "electron-packager . Triarchy --platform=win32 --arch=x64 --out=dist --overwrite --ignore=^/dist --ignore=^/node_modules"
+  },
+  "devDependencies": {
+    "@electron/packager": "^18.3.6",
+    "electron": "44.9.3"
+  }
+}

@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'">
+  <title>Triarchy</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header id="appbar">
+    <div class="brand">
+      <span class="brand-name">Triarchy</span>
+      <span class="brand-version" id="version"></span>
+    </div>
+    <span id="status" class="app-status"></span>
+    <div class="appbar-buttons">
+      <button id="reload-all" title="세 칸을 모두 새로고침">⟳ 모두 새로고침</button>
+      <button id="home-all" title="세 칸을 모두 홈 화면으로">⌂ 모두 홈으로</button>
+      <button id="fullscreen" title="전체 화면 켜기/끄기 (F11)">⤢ 전체 화면</button>
+      <button id="restore-layout" title="세 칸을 같은 너비로, 한 칸 크게 보기도 해제">▥ 배치 초기화</button>
+      <button id="open-settings" title="홈 주소 등 전체 설정">⚙ 설정</button>
+      <button id="theme" title="밝은 화면 / 어두운 화면">☀ 라이트</button>
+    </div>
+  </header>
+
+  <main id="panes"></main>
+
+  <div id="composer">
+    <div id="composer-head">
+      <span id="drag-handle" title="끌어서 옮기기">⠿ 공통 프롬프트</span>
+      <span id="draft-state" class="muted"></span>
+      <span class="spacer"></span>
+      <span class="muted">전송 대상</span>
+      <span id="targets"></span>
+      <button id="dock" title="아래쪽에 가로로 길게 고정">📌 아래에 고정</button>
+      <button id="fold" title="접기">▼ 접기</button>
+    </div>
+    <div id="composer-body">
+      <textarea id="prompt" rows="3" placeholder="여기에 쓰고 Enter 를 누르면 전송 대상 칸 모두에 보냅니다. (줄바꿈: Shift+Enter)"></textarea>
+      <button id="send">보내기</button>
+    </div>
+    <div id="composer-foot">
+      <button id="select-all">전체 선택</button>
+      <button id="copy">복사</button>
+      <button id="clear">초기화</button>
+      <span class="spacer"></span>
+      <span id="char-count" class="muted">0자</span>
+    </div>
+  </div>
+  <button id="unfold" title="공통 프롬프트 펼치기">✎ 공통 프롬프트 펼치기</button>
+  <div id="drag-cover"></div>
+
+  <div id="settings-backdrop">
+    <div id="settings">
+      <h2>⚙ 설정</h2>
+      <p class="hint">각 칸의 홈(⌂) 주소입니다. 앱을 켤 때도 항상 이 화면으로 시작합니다.</p>
+      <div id="settings-rows"></div>
+      <div id="settings-error"></div>
+      <div class="settings-actions">
+        <button id="settings-cancel">취소</button>
+        <button id="settings-save">저장</button>
+      </div>
+    </div>
+  </div>
+
+  <template id="settings-row-template">
+    <div class="settings-row">
+      <label class="settings-label"></label>
+      <input type="text" class="settings-url" spellcheck="false">
+      <div class="settings-row-buttons">
+        <button class="use-current" title="지금 이 칸에 떠 있는 화면 주소를 넣습니다">지금 화면 주소 넣기</button>
+        <button class="use-default" title="처음 기본 주소로 되돌립니다">기본값</button>
+      </div>
+    </div>
+  </template>
+
+  <template id="pane-template">
+    <section class="pane">
+      <div class="toolbar">
+        <span class="dot"></span>
+        <span class="name"></span>
+        <span class="spacer"></span>
+        <button class="back" title="뒤로 가기">←</button>
+        <button class="forward" title="앞으로 가기">→</button>
+        <button class="reload" title="새로고침">⟳</button>
+        <button class="home" title="홈 (설정한 프로젝트 화면으로)">⌂</button>
+        <button class="external" title="지금 화면을 기본 브라우저로 열기">↗</button>
+        <span class="sep"></span>
+        <button class="zoom-out" title="작게 보기">－</button>
+        <span class="zoom-level">100%</span>
+        <button class="zoom-in" title="크게 보기">＋</button>
+        <span class="sep"></span>
+        <button class="maximize" title="이 칸만 크게 보기">⛶</button>
+      </div>
+      <div class="statusbar">
+        <span class="pane-status"></span>
+        <span class="pane-url"></span>
+      </div>
+      <div class="view-wrap"></div>
+    </section>
+  </template>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
