@@ -4,6 +4,7 @@ ChatGPT, Claude, Gemini 를 한 화면에 3칸으로 나란히 띄워 쓰는 Win
 
 - 각 칸에 실제 사이트를 그대로 띄우고, 칸마다 로그인 저장소를 따로 둡니다.
 - 공통 입력창에 쓰고 Enter 를 누르면 세 칸에 같은 글을 넣고 전송합니다. (Shift+Enter 줄바꿈)
+- 맨 위 "보이기" 체크로 3칸 / 2칸 / 1칸 중 보일 칸을 고릅니다.
 - 사이트가 바뀌어 자동 입력이 안 되면 `src/sites.js` 만 고치면 됩니다.
 
 ## 그냥 쓰기
@@ -17,6 +18,13 @@ Releases 의 `Triarchy-vX.Y.Z-Windows.zip` 을 받아 압축을 풀면 `Triarchy
 ```json
 { "chatgpt": "https://chatgpt.com/g/...", "claude": "https://claude.ai/...", "gemini": "https://gemini.google.com/..." }
 ```
+
+## AI 에이전트·스크립트로 제어
+```
+Triarchy.exe --panes=chatgpt,claude   # 보일 칸 (chatgpt / claude / gemini / all)
+Triarchy.exe --reset-layout            # 보이는 칸을 같은 너비로
+```
+이미 켜져 있으면 켜져 있는 창에 전달됩니다. 현재 상태는 `%APPDATA%\Triarchy\state.json` (JSON) 에 기록됩니다.
 
 ## 직접 빌드하기 (개발자용)
 ```

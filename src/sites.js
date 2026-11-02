@@ -10,6 +10,9 @@
 //  - busySelectors  : 답변을 만드는 중일 때 보이는 "중지" 버튼. 보이면 그 칸에는 보내지 않습니다.
 //  - excludeInside  : (선택) 이 안에 있는 편집칸은 입력창으로 고르지 않습니다. (답변 쪽 편집기 등)
 //                     기본으로 답변 영역, 캔버스, 코드 편집기는 빼고 찾습니다.
+//  - composerSelectors : (선택) 채팅 입력 상자(맨 아래 입력 영역) 전체를 찾는 규칙.
+//                     있으면 이 안에 있는 편집칸을 가장 먼저 입력창으로 고릅니다.
+//                     (이미 열려 있는 다른 글상자에 글이 들어가지 않도록)
 //  - userAgent      : 'electron' 이면 그 칸은 Electron 기본 사용자 에이전트로 접속합니다.
 //                     (Gemini: 칸 안에서 직접 구글 로그인해야 껐다 켜도 로그인이 유지됩니다)
 //  규칙은 CSS 선택자 문법입니다. 새 규칙은 목록 맨 위에 추가하세요.
@@ -30,8 +33,21 @@ const sites = [
       '#prompt-textarea',
       'textarea[data-id="root"]',
       'div.ProseMirror[contenteditable="true"]',
-      'textarea[name="prompt-textarea"]',
-      'textarea'
+      'textarea[name="prompt-textarea"]'
+    ],
+    composerSelectors: [
+      'form[data-type="unified-composer"]',
+      '[data-testid="composer"]',
+      '#thread-bottom-container',
+      '#thread-bottom',
+      'form:has(#prompt-textarea)',
+      'form:has(button[data-testid="send-button"])',
+      'form:has(#composer-submit-button)'
+    ],
+    // 질문 고치기 상자, 프로젝트 설명 등 팝업 창 안의 글상자는 입력창으로 고르지 않는다.
+    excludeInside: [
+      '[role="dialog"]',
+      '[aria-modal="true"]'
     ],
     sendSelectors: [
       'button[data-testid="send-button"]',

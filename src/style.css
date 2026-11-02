@@ -90,6 +90,25 @@ button:disabled { opacity: 0.35; cursor: default; }
   text-overflow: ellipsis;
 }
 
+/* 맨 위 "보이기" 체크 (보일 칸 고르기) */
+#pane-toggles {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+#pane-toggles label { display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; font-weight: 700; font-size: 12px; }
+#pane-toggles input { margin: 0; accent-color: var(--accent); cursor: pointer; }
+#pane-toggles label.locked, #pane-toggles label.locked input { cursor: not-allowed; }
+#pane-toggles label::before { content: ''; width: 8px; height: 8px; border-radius: 50%; }
+#pane-toggles label[data-site="chatgpt"]::before { background: var(--chatgpt); }
+#pane-toggles label[data-site="claude"]::before { background: var(--claude); }
+#pane-toggles label[data-site="gemini"]::before { background: var(--gemini); }
+
 .appbar-buttons { display: flex; gap: 6px; flex-shrink: 0; }
 .appbar-buttons button { height: 30px; padding: 0 12px; font-size: 12px; font-weight: 600; }
 
@@ -207,7 +226,8 @@ webview {
 }
 
 /* 한 칸 크게 보기 */
-#panes.maximized .pane.collapsed { visibility: hidden; border: 0; min-width: 0; }
+/* 한 칸 크게 보기, 맨 위 "보이기" 에서 끈 칸 (사이트는 그대로 살아 있어서 다시 켜면 바로 보임) */
+.pane.collapsed { visibility: hidden; border: 0; min-width: 0; }
 
 /* =====================================================================
    공통 프롬프트: 떠 있는 창 (끌어서 옮기기 / 아래에 고정 / 접기)
@@ -254,6 +274,7 @@ webview {
 #targets { display: flex; gap: 8px; }
 #targets label { display: flex; align-items: center; gap: 3px; cursor: pointer; user-select: none; }
 #targets input { margin: 0; accent-color: var(--accent); }
+#targets label.disabled { opacity: 0.4; cursor: not-allowed; text-decoration: line-through; }
 
 #composer-head button, #composer-foot button {
   height: 24px;

@@ -41,29 +41,42 @@ const ANSWER_AREAS = [
 
 // 입력창을 찾아 포커스하고 기존 글을 선택해 둔다 (새 글로 덮어쓰기 위해).
 // 찾은 입력창에는 표시(data-triarchy-input)를 붙여 두고, 글을 넣은 뒤 제대로 들어갔는지 확인한다.
-function focusInputScript(selectors, busySelectors, exclude, text, dry = false) {
+// 찾는 순서: ① 채팅 입력 상자(composerSelectors) 안의 편집칸 ② 그 밖의 편집칸 (답변·팝업 안은 제외)
+// 다른 글상자(질문 고치기 상자 등)에 포커스가 있으면 먼저 포커스를 빼서, 글이 그쪽으로 새지 않게 한다.
+function focusInputScript(site, text, dry = false, checkBusy = true) {
   return `(() => {
-    const selectors = ${JSON.stringify(selectors)};
-    const exclude = ${JSON.stringify(exclude)}.join(',');
+    const selectors = ${JSON.stringify(site.inputSelectors)};
+    const composers = ${JSON.stringify(site.composerSelectors || [])}.join(',');
+    const exclude = ${JSON.stringify(excludeOf(site))}.join(',');
     const visible = el => el && el.getClientRects().length > 0;
-    for (const sel of ${JSON.stringify(busySelectors || [])}) {
-      if ([...document.querySelectorAll(sel)].some(visible)) return 'busy';
-    }
-    document.querySelectorAll('[data-triarchy-input]').forEach(e => e.removeAttribute('data-triarchy-input'));
-    let el = null;
-    for (const sel of selectors) {
-      const found = [...document.querySelectorAll(sel)].filter(e => visible(e) && !e.closest(exclude));
-      if (found.length) {
-        // 여러 개면 화면 맨 아래쪽(채팅 입력창 자리)에 있는 것을 고른다.
-        el = found.reduce((a, b) => b.getBoundingClientRect().bottom > a.getBoundingClientRect().bottom ? b : a);
-        break;
+    if (${checkBusy}) {
+      for (const sel of ${JSON.stringify(site.busySelectors || [])}) {
+        if ([...document.querySelectorAll(sel)].some(visible)) return 'busy';
       }
     }
+    const pick = inComposerOnly => {
+      for (const sel of selectors) {
+        let found = [...document.querySelectorAll(sel)].filter(e => visible(e) && !e.closest(exclude));
+        if (inComposerOnly) found = found.filter(e => e.closest(composers));
+        if (found.length) {
+          // 여러 개면 화면 맨 아래쪽(채팅 입력창 자리)에 있는 것을 고른다.
+          return found.reduce((a, b) => b.getBoundingClientRect().bottom > a.getBoundingClientRect().bottom ? b : a);
+        }
+      }
+      return null;
+    };
+    const el = (composers && pick(true)) || pick(false);
     if (!el) return 'no-input';
     if (${dry}) return 'found';
+    document.querySelectorAll('[data-triarchy-input]').forEach(e => e.removeAttribute('data-triarchy-input'));
     el.setAttribute('data-triarchy-input', '1');
+    const isMine = () => document.activeElement === el || el.contains(document.activeElement);
+    // 다른 글상자에 포커스가 있으면 빼낸다.
+    const active = document.activeElement;
+    if (active && active !== document.body && !isMine()) { try { active.blur(); } catch {} }
+    window.getSelection().removeAllRanges();
     el.focus();
-    if (document.activeElement !== el && !el.contains(document.activeElement)) {
+    if (!isMine()) {
       el.click();
       el.focus();
     }
@@ -93,18 +106,38 @@ function checkInputScript(text) {
   })()`;
 }
 
+// 포커스(커서)가 표시해 둔 입력창 안에 있는지 확인한다. 아니면 키 입력을 보내지 않는다.
+const INPUT_FOCUSED_SCRIPT = `(() => {
+  const el = document.querySelector('[data-triarchy-input]');
+  return !!el && (document.activeElement === el || el.contains(document.activeElement));
+})()`;
+
 // 표시해 둔 입력창에 직접 글을 넣는다.
+// 포커스가 그 입력창에 있을 때만 insertText 를 쓰고 (다른 상자로 새지 않게),
+// 아니면 그 입력창에 "붙여넣기" 이벤트를 직접 보낸다.
 function forceInsertScript(text) {
   return `(() => {
     const el = document.querySelector('[data-triarchy-input]');
-    if (!el) return false;
-    el.focus();
-    const range = document.createRange();
-    range.selectNodeContents(el);
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(range);
-    return document.execCommand('insertText', false, ${JSON.stringify(text)});
+    if (!el) return 'no-input';
+    const isMine = () => document.activeElement === el || el.contains(document.activeElement);
+    if (!isMine()) {
+      const active = document.activeElement;
+      if (active && active !== document.body) { try { active.blur(); } catch {} }
+      el.focus();
+    }
+    if (isMine()) {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      document.execCommand('insertText', false, ${JSON.stringify(text)});
+      return 'inserted';
+    }
+    const dt = new DataTransfer();
+    dt.setData('text/plain', ${JSON.stringify(text)});
+    el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    return 'pasted';
   })()`;
 }
 
@@ -156,7 +189,7 @@ function excludeOf(site) {
 async function hasInput(pane) {
   try {
     const r = await pane.webview.executeJavaScript(
-      focusInputScript(pane.site.inputSelectors, [], excludeOf(pane.site), '', true));
+      focusInputScript(pane.site, '', true, false));
     return r === 'found';
   } catch { return false; }
 }
@@ -206,11 +239,10 @@ async function sendToPane(pane, text) {
   webview.focus();
   await sleep(80);
 
-  const exclude = excludeOf(site);
-  let mode = await webview.executeJavaScript(focusInputScript(site.inputSelectors, site.busySelectors, exclude, text));
+  let mode = await webview.executeJavaScript(focusInputScript(site, text));
   if (mode === 'no-input' && await returnToChat(pane)) {
     await sleep(500);
-    mode = await webview.executeJavaScript(focusInputScript(site.inputSelectors, site.busySelectors, exclude, text));
+    mode = await webview.executeJavaScript(focusInputScript(site, text));
   }
   if (mode === 'busy') return { ok: false, msg: '답변을 만드는 중이라 건너뜀' };
   if (mode === 'no-input') return { ok: false, msg: '입력창을 찾지 못함 (로그인 필요?)' };
@@ -222,13 +254,16 @@ async function sendToPane(pane, text) {
   }
   if (!(await webview.executeJavaScript(checkInputScript(text))) && mode === 'editable') {
     // 직접 넣기가 안 먹히는 사이트면 키보드로 한 줄씩 입력해 본다.
-    await webview.executeJavaScript(focusInputScript(site.inputSelectors, [], exclude, text));
-    const lines = text.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      if (i > 0) await pressKey(webview, 'Enter', ['shift']);
-      if (lines[i]) await webview.insertText(lines[i]);
+    // 단, 커서가 찾은 입력창 안에 있을 때만 (다른 글상자에 글이 들어가지 않도록).
+    await webview.executeJavaScript(focusInputScript(site, text, false, false));
+    if (await webview.executeJavaScript(INPUT_FOCUSED_SCRIPT)) {
+      const lines = text.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (i > 0) await pressKey(webview, 'Enter', ['shift']);
+        if (lines[i]) await webview.insertText(lines[i]);
+      }
+      await sleep(300);
     }
-    await sleep(300);
   }
   if (!(await webview.executeJavaScript(checkInputScript(text)))) {
     return { ok: false, msg: '채팅 입력창에 글이 들어가지 않아 보내지 않음' };
@@ -241,6 +276,9 @@ async function sendToPane(pane, text) {
     // 전송 버튼을 못 찾으면 Enter 키로 보낸다.
     webview.focus();
     await webview.executeJavaScript(`(() => { const el = document.querySelector('[data-triarchy-input]'); if (el) el.focus(); })()`);
+    if (!(await webview.executeJavaScript(INPUT_FOCUSED_SCRIPT))) {
+      return { ok: false, msg: '전송 버튼을 찾지 못함 (글은 입력창에 들어가 있음)' };
+    }
     await pressKey(webview, 'Enter');
     return { ok: true, msg: 'Enter 키로 보냄' };
   }
@@ -267,7 +305,7 @@ async function sendAll() {
   const text = promptEl.value.trim();
   if (!text) return;
 
-  const targets = panes.filter(p => p.targetBox.checked);
+  const targets = panes.filter(p => p.visible && p.targetBox.checked);
   if (targets.length === 0) {
     statusEl.textContent = '보낼 칸이 없어요';
     return;
@@ -354,9 +392,11 @@ document.getElementById('clear').addEventListener('click', () => {
 const targetsEl = document.getElementById('targets');
 
 function setSending(pane, on) {
+  pane.sending = on;
   pane.targetBox.checked = on;
   pane.root.classList.toggle('not-sending', !on);
   store.set(`send:${pane.site.id}`, on);
+  reportState();
 }
 
 function loadSending(site) {
@@ -446,12 +486,12 @@ window.addEventListener('resize', () => {
 });
 
 // ---------------------------------------------------------------------
-// 한 칸 크게 보기 / 원래대로
+// 보이는 칸 고르기 (맨 위 체크) / 한 칸 크게 보기 / 칸 너비 조절
 // ---------------------------------------------------------------------
 
 let maximizedId = null;
 let ratios = loadRatios();
-const dividers = [];
+let dividers = [];
 
 function loadRatios() {
   const r = store.get('ratios', null);
@@ -459,52 +499,71 @@ function loadRatios() {
   return [1, 1, 1];
 }
 
-function applyMaximize() {
-  document.getElementById('panes').classList.toggle('maximized', !!maximizedId);
+const visiblePanes = () => panes.filter(p => p.visible);
+
+// 칸 너비만 다시 계산한다 (경계선을 끄는 동안 계속 불림).
+function applyFlex() {
   panes.forEach((p, i) => {
-    const on = p.site.id === maximizedId;
-    p.root.style.flex = maximizedId ? (on ? '1 1 0' : '0 0 0') : `${ratios[i]} 1 0`;
+    const shown = maximizedId ? p.site.id === maximizedId : p.visible;
+    p.root.style.flex = shown ? (maximizedId ? '1 1 0' : `${ratios[i]} 1 0`) : '0 0 0';
+    p.root.classList.toggle('collapsed', !shown);
   });
-  dividers.forEach(d => { d.style.display = maximizedId ? 'none' : ''; });
-  for (const p of panes) {
-    const on = p.site.id === maximizedId;
-    p.root.classList.toggle('collapsed', !!maximizedId && !on);
-    p.maxBtn.classList.toggle('on', on);
-    p.maxBtn.textContent = on ? '⧉' : '⛶';
-    p.maxBtn.title = on ? '세 칸으로 돌아가기' : '이 칸만 크게 보기';
-  }
 }
 
-// 칸 사이 경계선을 끌어서 너비 조절
-function addDividers() {
+// 보이는 칸·크게 보기가 바뀌면 화면 전체를 다시 배치한다.
+function applyLayout() {
+  if (maximizedId && !visiblePanes().some(p => p.site.id === maximizedId)) maximizedId = null;
+  document.getElementById('panes').classList.toggle('maximized', !!maximizedId);
+  applyFlex();
+  renderDividers();
+  const several = visiblePanes().length > 1;
+  for (const p of panes) {
+    const on = p.site.id === maximizedId;
+    p.maxBtn.classList.toggle('on', on);
+    p.maxBtn.style.display = several ? '' : 'none';
+    p.maxBtn.textContent = on ? '⧉' : '⛶';
+    p.maxBtn.title = on ? '원래 칸 배치로 돌아가기' : '이 칸만 크게 보기';
+  }
+  reportState();
+}
+
+// 보이는 칸 사이에만 경계선을 놓는다. 끌어서 두 칸의 너비를 조절한다.
+function renderDividers() {
+  dividers.forEach(d => d.remove());
+  dividers = [];
+  if (maximizedId) return;
   const panesEl = document.getElementById('panes');
-  for (let i = 0; i < panes.length - 1; i++) {
+  const shown = panes.map((p, i) => ({ p, i })).filter(x => x.p.visible);
+  for (let k = 0; k < shown.length - 1; k++) {
+    const a = shown[k].i;
+    const b = shown[k + 1].i;
     const d = document.createElement('div');
     d.className = 'divider';
     d.title = '끌어서 칸 너비 조절 (두 번 누르면 같은 너비로)';
-    panes[i].root.after(d);
+    panes[a].root.after(d);
     dividers.push(d);
     d.addEventListener('dblclick', resetLayout);
     d.addEventListener('mousedown', e => {
       e.preventDefault();
       const startX = e.clientX;
-      const total = ratios.reduce((a, b) => a + b, 0);
+      const total = shown.reduce((sum, x) => sum + ratios[x.i], 0);
       const width = panesEl.clientWidth;
       const before = [...ratios];
       dragCover.classList.add('show', 'col');
       const move = ev => {
         const delta = ((ev.clientX - startX) / width) * total;
         const min = total * 0.15;
-        const a = Math.max(min, Math.min(before[i] + before[i + 1] - min, before[i] + delta));
-        ratios[i] = a;
-        ratios[i + 1] = before[i] + before[i + 1] - a;
-        applyMaximize();
+        const left = Math.max(min, Math.min(before[a] + before[b] - min, before[a] + delta));
+        ratios[a] = left;
+        ratios[b] = before[a] + before[b] - left;
+        applyFlex();
       };
       const up = () => {
         dragCover.classList.remove('show', 'col');
         window.removeEventListener('mousemove', move);
         window.removeEventListener('mouseup', up);
         store.set('ratios', ratios);
+        reportState();
       };
       window.addEventListener('mousemove', move);
       window.addEventListener('mouseup', up);
@@ -512,16 +571,91 @@ function addDividers() {
   }
 }
 
+// 배치 초기화: 보이는 칸을 모두 같은 너비로 (한 칸만 보이면 그대로), 크게 보기도 해제
 function resetLayout() {
   ratios = [1, 1, 1];
   store.set('ratios', ratios);
   maximizedId = null;
-  applyMaximize();
+  applyLayout();
 }
 
 function toggleMaximize(pane) {
   maximizedId = maximizedId === pane.site.id ? null : pane.site.id;
-  applyMaximize();
+  applyLayout();
+}
+
+// 맨 위 "보이기" 체크: 끈 칸은 화면에서 사라지고, 공통 프롬프트 전송 대상에서도 빠진다 (회색으로 잠김).
+// 최소 한 칸은 항상 보여야 하므로, 마지막 남은 체크는 끌 수 없다.
+function setVisible(pane, on, save = true) {
+  if (!on && pane.visible && visiblePanes().length <= 1) {
+    pane.showBox.checked = true;
+    statusEl.textContent = '최소 한 칸은 보여야 해요';
+    return false;
+  }
+  pane.visible = on;
+  pane.root.classList.toggle('hidden-pane', !on);
+  if (save) store.set(`show:${pane.site.id}`, on);
+  updateVisibilityControls();
+  applyLayout();
+  return true;
+}
+
+// 여러 칸을 한꺼번에 보이게/숨기게 (명령줄 --panes 등에서 사용). 하나도 없으면 무시한다.
+function setVisibleSet(ids) {
+  const want = new Set(ids);
+  if (!panes.some(p => want.has(p.site.id))) return false;
+  for (const p of panes) {
+    p.visible = want.has(p.site.id);
+    p.root.classList.toggle('hidden-pane', !p.visible);
+    store.set(`show:${p.site.id}`, p.visible);
+  }
+  updateVisibilityControls();
+  applyLayout();
+  return true;
+}
+
+function updateVisibilityControls() {
+  const onlyOne = visiblePanes().length <= 1;
+  for (const p of panes) {
+    p.showBox.checked = p.visible;
+    // 마지막 하나 남은 체크는 끌 수 없게 잠근다.
+    p.showBox.disabled = onlyOne && p.visible;
+    p.showLabel.classList.toggle('locked', p.showBox.disabled);
+    p.showLabel.title = p.showBox.disabled ? '최소 한 칸은 보여야 해요' : `${p.site.name} 칸 보이기 / 숨기기`;
+    // 숨긴 칸은 공통 프롬프트 "전송 대상"에서 체크 해제 + 비활성화. 다시 보이면 전에 고른 대로 돌아온다.
+    p.targetBox.disabled = !p.visible;
+    p.targetBox.checked = p.visible && p.sending;
+    p.targetLabel.classList.toggle('disabled', !p.visible);
+    p.targetLabel.title = p.visible ? '' : '숨긴 칸에는 보내지 않아요 (맨 위에서 다시 체크하면 켜짐)';
+  }
+}
+
+// 지금 화면 상태를 %APPDATA%\Triarchy\state.json 에 적어 둔다 (AI 에이전트·스크립트가 읽을 수 있게).
+let reportTimer = null;
+function reportState() {
+  clearTimeout(reportTimer);
+  reportTimer = setTimeout(() => {
+    if (!window.triarchy.reportState) return;
+    window.triarchy.reportState({
+      visiblePanes: visiblePanes().map(p => p.site.id),
+      sendTargets: panes.filter(p => p.visible && p.targetBox.checked).map(p => p.site.id),
+      maximized: maximizedId,
+      ratios: Object.fromEntries(panes.map((p, i) => [p.site.id, Math.round(ratios[i] * 1000) / 1000]))
+    });
+  }, 200);
+}
+
+// 명령줄 등 바깥에서 온 명령 처리
+const PANE_ALIASES = { gpt: 'chatgpt', openai: 'chatgpt', anthropic: 'claude', google: 'gemini', bard: 'gemini' };
+function runControl(cmd) {
+  if (!cmd || !cmd.type) return;
+  if (cmd.type === 'panes') {
+    const ids = (cmd.ids || []).map(x => PANE_ALIASES[x] || x);
+    const list = ids.includes('all') ? panes.map(p => p.site.id) : ids;
+    if (!setVisibleSet(list)) statusEl.textContent = '--panes 에 알맞은 칸 이름이 없어요 (chatgpt, claude, gemini)';
+  } else if (cmd.type === 'reset-layout') {
+    resetLayout();
+  }
 }
 
 // 앱을 켰을 때 사이트가 스스로 다른 화면(지난 대화·스레드 등)으로 넘어가 버리면 홈 화면으로 되돌린다.
@@ -565,6 +699,7 @@ document.getElementById('home-all').addEventListener('click', () => {
   panes.forEach(p => p.webview.loadURL(homeUrlOf(p.site)));
 });
 document.getElementById('restore-layout').addEventListener('click', resetLayout);
+const paneTogglesEl = document.getElementById('pane-toggles');
 document.getElementById('fullscreen').addEventListener('click', () => window.triarchy.toggleFullscreen());
 document.getElementById('open-settings').addEventListener('click', () => openSettings());
 
@@ -662,10 +797,22 @@ function createPane(site) {
   const targetLabel = document.createElement('label');
   targetLabel.innerHTML = '<input type="checkbox"> ';
   targetLabel.append(site.name);
+  pane.targetLabel = targetLabel;
   pane.targetBox = targetLabel.querySelector('input');
   targetsEl.appendChild(targetLabel);
   pane.targetBox.addEventListener('change', () => setSending(pane, pane.targetBox.checked));
   setSending(pane, loadSending(site));
+
+  // 맨 위 "보이기" 체크
+  const showLabel = document.createElement('label');
+  showLabel.innerHTML = '<input type="checkbox"> ';
+  showLabel.dataset.site = site.id;
+  showLabel.append(site.name);
+  pane.showLabel = showLabel;
+  pane.showBox = showLabel.querySelector('input');
+  paneTogglesEl.appendChild(showLabel);
+  pane.showBox.addEventListener('change', () => setVisible(pane, pane.showBox.checked));
+  pane.visible = store.get(`show:${site.id}`, true) !== false;
 
   backBtn.disabled = true;
   fwdBtn.disabled = true;
@@ -751,8 +898,16 @@ document.getElementById('settings-save').addEventListener('click', async () => {
 Promise.all([window.triarchy.getSites(), window.triarchy.getSettings()]).then(([sites, saved]) => {
   settings = { homeUrls: {}, ...saved };
   sites.forEach(createPane);
-  addDividers();
-  applyMaximize();
+  // 저장된 값이 잘못되어 모두 꺼져 있으면 모두 보이게 한다.
+  if (!panes.some(p => p.visible)) panes.forEach(p => { p.visible = true; });
+  panes.forEach(p => p.root.classList.toggle('hidden-pane', !p.visible));
+  updateVisibilityControls();
+  applyLayout();
   restoreComposer();
   promptEl.focus();
+  // 명령줄로 받은 명령 (예: Triarchy.exe --panes=chatgpt,claude)
+  if (window.triarchy.getStartupCommands) {
+    window.triarchy.getStartupCommands().then(cmds => (cmds || []).forEach(runControl)).catch(() => {});
+  }
+  if (window.triarchy.onControl) window.triarchy.onControl(runControl);
 });

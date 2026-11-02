@@ -31,13 +31,32 @@ app.userAgentFallback = CHROME_UA;
   app.setPath('userData', newDir);
 })();
 
+// ---------------------------------------------------------------------
+// AI 에이전트·스크립트 제어 (명령줄 옵션)
+//   Triarchy.exe --panes=chatgpt,claude   보일 칸 고르기 (chatgpt / claude / gemini / all, gpt 도 됨)
+//   Triarchy.exe --reset-layout            배치 초기화 (보이는 칸을 같은 너비로)
+// 이미 켜져 있으면 켜져 있는 창에 명령을 전달한다.
+// 지금 화면 상태는 %APPDATA%\Triarchy\state.json 에 JSON 으로 적힌다.
+// ---------------------------------------------------------------------
+function parseControlArgs(argv) {
+  const cmds = [];
+  for (const arg of argv || []) {
+    const m = /^--panes=(.*)$/i.exec(arg);
+    if (m) cmds.push({ type: 'panes', ids: m[1].split(/[,+\s]+/).map(x => x.trim().toLowerCase()).filter(Boolean) });
+    else if (/^--reset-layout$/i.test(arg)) cmds.push({ type: 'reset-layout' });
+  }
+  return cmds;
+}
+const startupCommands = parseControlArgs(process.argv);
+
 // 이미 켜져 있으면 새 창을 열지 않고, 켜져 있는 창을 앞으로 가져온다.
 if (!app.requestSingleInstanceLock()) {
   app.exit(0);
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_e, argv) => {
     const win = BrowserWindow.getAllWindows().find(w => !w.getParentWindow());
     if (!win) return;
+    for (const cmd of parseControlArgs(argv)) win.webContents.send('control', cmd);
     if (win.isMinimized()) win.restore();
     win.show();
     win.focus();
@@ -251,6 +270,14 @@ ipcMain.handle('open-external', (_e, url) => {
   if (/^https?:\/\//.test(url)) shell.openExternal(url);
 });
 ipcMain.handle('get-settings', () => loadSettings());
+ipcMain.handle('get-startup-commands', () => startupCommands);
+ipcMain.handle('report-state', (_e, state) => {
+  try {
+    const out = { app: 'Triarchy', version: app.getVersion(), updatedAt: new Date().toISOString(), ...state };
+    fs.writeFileSync(path.join(app.getPath('userData'), 'state.json'), JSON.stringify(out, null, 2), 'utf8');
+  } catch {}
+  return true;
+});
 ipcMain.handle('save-settings', (_e, settings) => {
   fs.writeFileSync(settingsPath(), JSON.stringify(settings, null, 2), 'utf8');
   return true;
