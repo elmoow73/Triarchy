@@ -234,6 +234,7 @@ async function returnToChat(pane) {
 
 async function sendToPane(pane, text) {
   const { site, webview } = pane;
+  if (pane.stopStartupWatch) pane.stopStartupWatch();
   if (!pane.ready) return { ok: false, msg: '아직 페이지를 불러오는 중' };
 
   webview.focus();
@@ -659,16 +660,54 @@ function runControl(cmd) {
 }
 
 // 앱을 켰을 때 사이트가 스스로 다른 화면(지난 대화·스레드 등)으로 넘어가 버리면 홈 화면으로 되돌린다.
-// 켜고 처음 20초 동안만, 최대 3번까지 지켜본다.
+// 처음 화면을 불러온 뒤 30초 동안, 최대 5번까지 지켜본다. 그 사이 사용자가 칸을 누르면 지켜보기를 멈춘다.
 // 로그인 화면으로 넘어간 경우는 그대로 둔다.
-const STARTUP_WATCH_MS = 20000;
-const STARTUP_MAX_RETURNS = 3;
+// 주소의 경로뿐 아니라 ?thread=… 같은 뒤쪽 값과 #… 도 비교한다.
+// (Claude 프로젝트는 지난 스레드를 열 때 경로는 그대로 두고 ?thread=… 만 붙여서 예전에는 놓쳤음)
+const STARTUP_WATCH_MS = 30000;
+const STARTUP_MAX_RETURNS = 5;
+
+function isAwayFromHome(now, home) {
+  if (now.pathname.replace(/\/$/, '') !== home.pathname.replace(/\/$/, '')) return true;
+  for (const [key, value] of now.searchParams) {
+    if (home.searchParams.get(key) !== value) return true;
+  }
+  return !!now.hash && now.hash !== '#' && now.hash !== home.hash;
+}
+
+// 홈 주소와 다른 부분(스레드 번호 등)을 모은다. 너무 짧은 값은 빼서 엉뚱한 항목을 지우지 않게 한다.
+function awayIds(now, home) {
+  const ids = [];
+  for (const [key, value] of now.searchParams) {
+    if (home.searchParams.get(key) !== value) ids.push(value);
+  }
+  const homeParts = home.pathname.split('/');
+  for (const part of now.pathname.split('/')) if (!homeParts.includes(part)) ids.push(part);
+  if (now.hash && now.hash !== home.hash) ids.push(now.hash.slice(1));
+  return ids.filter(x => x.length >= 8);
+}
+
+function forgetThreadScript(ids) {
+  return `(() => {
+    const ids = ${JSON.stringify(ids)};
+    let removed = 0;
+    for (const st of [localStorage, sessionStorage]) {
+      for (const key of Object.keys(st)) {
+        const value = st.getItem(key) || '';
+        if (/token|auth|session|cookie|login/i.test(key)) continue;
+        if (ids.some(id => key.includes(id) || value.includes(id))) { st.removeItem(key); removed++; }
+      }
+    }
+    return removed;
+  })()`;
+}
 
 function watchStartupRedirect(pane) {
-  const started = Date.now();
+  let started = 0;
   let returns = 0;
+  let stopped = false;
   const check = () => {
-    if (returns >= STARTUP_MAX_RETURNS || Date.now() - started > STARTUP_WATCH_MS) return;
+    if (stopped || !started || returns >= STARTUP_MAX_RETURNS || Date.now() - started > STARTUP_WATCH_MS) return;
     let now, home;
     try {
       now = new URL(pane.webview.getURL());
@@ -676,16 +715,45 @@ function watchStartupRedirect(pane) {
     } catch { return; }
     if (now.hostname !== home.hostname) return;
     if (/login|signin|auth/i.test(now.pathname)) return;
-    if (now.pathname.replace(/\/$/, '') !== home.pathname.replace(/\/$/, '')) {
+    if (isAwayFromHome(now, home)) {
       returns++;
-      pane.webview.loadURL(home.href);
+      // 한 번 되돌렸는데도 또 지난 스레드가 열리면, 사이트가 "마지막에 본 스레드"를 기억해 두고 다시 여는 것이다.
+      // 그 스레드 번호가 적힌 사이트 저장 항목만 지운 뒤 홈을 연다. (로그인 정보는 건드리지 않음)
+      const ids = awayIds(now, home);
+      if (returns >= 2 && ids.length) {
+        pane.webview.executeJavaScript(forgetThreadScript(ids)).catch(() => {})
+          .finally(() => pane.webview.loadURL(home.href));
+      } else {
+        pane.webview.loadURL(home.href);
+      }
     }
   };
   // 사이트가 화면을 바꿀 때마다(주소 이동, 페이지 안 이동) 잠깐 뒤에 확인한다.
   const later = () => setTimeout(check, 700);
   pane.webview.addEventListener('did-navigate', later);
   pane.webview.addEventListener('did-navigate-in-page', later);
-  pane.webview.addEventListener('dom-ready', () => setTimeout(check, 3000));
+  pane.webview.addEventListener('dom-ready', () => {
+    if (!started) started = Date.now();
+    setTimeout(check, 1500);
+    setTimeout(check, 4000);
+  });
+  // 사용자가 칸 안을 마우스로 누르거나 키를 치면 (직접 다른 스레드를 여는 경우 등) 더는 되돌리지 않는다.
+  // 사이트 안에 작은 감시 코드를 넣어, 사용자가 누를 때 신호(콘솔 메시지)를 보내게 한다.
+  pane.webview.addEventListener('dom-ready', () => {
+    if (stopped) return;
+    pane.webview.executeJavaScript(`(() => {
+      if (window.__triarchyWatch) return;
+      window.__triarchyWatch = true;
+      const say = e => { if (e.isTrusted) console.log('__triarchy_user_input__'); };
+      addEventListener('pointerdown', say, true);
+      addEventListener('keydown', say, true);
+    })()`).catch(() => {});
+  });
+  pane.webview.addEventListener('console-message', e => {
+    const msg = e.message || (e.params && e.params.message) || '';
+    if (msg === '__triarchy_user_input__') stopped = true;
+  });
+  pane.stopStartupWatch = () => { stopped = true; };
 }
 
 // ---------------------------------------------------------------------
