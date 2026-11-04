@@ -39,11 +39,15 @@ const ANSWER_AREAS = [
   '.monaco-editor'
 ];
 
-// 입력창을 찾아 포커스하고 기존 글을 선택해 둔다 (새 글로 덮어쓰기 위해).
-// 찾은 입력창에는 표시(data-triarchy-input)를 붙여 두고, 글을 넣은 뒤 제대로 들어갔는지 확인한다.
-// 찾는 순서: ① 채팅 입력 상자(composerSelectors) 안의 편집칸 ② 그 밖의 편집칸 (답변·팝업 안은 제외)
-// 다른 글상자(질문 고치기 상자 등)에 포커스가 있으면 먼저 포커스를 빼서, 글이 그쪽으로 새지 않게 한다.
-function focusInputScript(site, text, dry = false, checkBusy = true) {
+// 채팅 입력창을 찾아 표시(data-triarchy-input)를 붙이고, 그 자리(화면 좌표)를 알려 준다.
+// 후보마다 점수를 매겨 진짜 채팅 입력창을 고른다.
+//   - 채팅 입력 상자(composerSelectors) 안에 있으면 크게 가산
+//   - 화면 안에 다 보이고 (아래로 삐져나가지 않고), 키가 화면 절반보다 작으면 가산
+//     (캔버스·답변 쪽 글상자는 보통 길어서 화면 밖까지 이어진다)
+//   - 지금 커서가 들어 있는 글상자는, 다른 후보가 있으면 감점 (커서가 답변 글상자에 있어도 피하도록)
+//   - 점수가 같으면 규칙 순서(sites.js 위쪽 우선), 그다음 화면 아래쪽에 있는 것
+// 지금 커서가 있던 다른 글상자는 표시(data-triarchy-prev)해 두고, 나중에 내용이 바뀌지 않았는지 확인한다.
+function locateInputScript(site, dry = false, checkBusy = true) {
   return `(() => {
     const selectors = ${JSON.stringify(site.inputSelectors)};
     const composers = ${JSON.stringify(site.composerSelectors || [])}.join(',');
@@ -51,34 +55,72 @@ function focusInputScript(site, text, dry = false, checkBusy = true) {
     const visible = el => el && el.getClientRects().length > 0;
     if (${checkBusy}) {
       for (const sel of ${JSON.stringify(site.busySelectors || [])}) {
-        if ([...document.querySelectorAll(sel)].some(visible)) return 'busy';
+        if ([...document.querySelectorAll(sel)].some(visible)) return { status: 'busy' };
       }
     }
-    const pick = inComposerOnly => {
-      for (const sel of selectors) {
-        let found = [...document.querySelectorAll(sel)].filter(e => visible(e) && !e.closest(exclude));
-        if (inComposerOnly) found = found.filter(e => e.closest(composers));
-        if (found.length) {
-          // 여러 개면 화면 맨 아래쪽(채팅 입력창 자리)에 있는 것을 고른다.
-          return found.reduce((a, b) => b.getBoundingClientRect().bottom > a.getBoundingClientRect().bottom ? b : a);
-        }
+    // 커서가 iframe 안에 있으면 그 iframe 이 activeElement 가 된다.
+    const active = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
+    const vh = window.innerHeight;
+    const seen = new Set();
+    const cands = [];
+    selectors.forEach((sel, order) => {
+      let list = [];
+      try { list = [...document.querySelectorAll(sel)]; } catch {}
+      for (const e of list) {
+        if (seen.has(e) || !visible(e) || e.closest(exclude)) continue;
+        seen.add(e);
+        const r = e.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) continue;
+        let score = 0;
+        if (composers && e.closest(composers)) score += 8;
+        if (r.top >= -2 && r.bottom <= vh + 2) score += 2;
+        if (r.height < vh * 0.5) score += 1;
+        const hasCursor = !!active && (e === active || e.contains(active));
+        cands.push({ e, r, order, score, hasCursor });
       }
-      return null;
-    };
-    const el = (composers && pick(true)) || pick(false);
-    if (!el) return 'no-input';
-    if (${dry}) return 'found';
-    document.querySelectorAll('[data-triarchy-input]').forEach(e => e.removeAttribute('data-triarchy-input'));
+    });
+    if (!cands.length) return { status: 'no-input' };
+    // (채팅 입력 상자 규칙이 있는 사이트(ChatGPT)만. 규칙이 낡아 상자를 못 찾아도 커서 있는 글상자는 피한다)
+    if (composers && cands.length > 1) {
+      for (const c of cands) if (c.hasCursor && !c.e.closest(composers)) c.score -= 4;
+    }
+    cands.sort((a, b) => b.score - a.score || a.order - b.order || b.r.bottom - a.r.bottom);
+    const pick = cands[0];
+    if (${dry}) return { status: 'found' };
+    const el = pick.e;
+    document.querySelectorAll('[data-triarchy-input],[data-triarchy-prev]').forEach(e => {
+      e.removeAttribute('data-triarchy-input');
+      e.removeAttribute('data-triarchy-prev');
+    });
     el.setAttribute('data-triarchy-input', '1');
+    window.__triarchyPrevText = null;
+    if (active && active !== el && !el.contains(active)) {
+      active.setAttribute('data-triarchy-prev', '1');
+      try { window.__triarchyPrevText = active.value !== undefined && active.tagName !== 'DIV' ? active.value : active.innerText; } catch {}
+    }
+    // 사람이 마우스로 누르듯 입력창을 누를 자리 (입력창 왼쪽 위 글자 줄). 다른 것이 덮고 있으면 누르지 않는다.
+    const r = el.getBoundingClientRect();
+    const x = r.left + Math.min(30, r.width / 2);
+    const y = r.top + Math.min(12, r.height / 2);
+    const hit = document.elementFromPoint(x, y);
+    const clickable = !!hit && (hit === el || el.contains(hit)) && x >= 0 && y >= 0 && y <= vh;
+    return { status: 'found', x, y, clickable, tag: el.tagName, cursorElsewhere: !!window.__triarchyPrevText || !!document.querySelector('[data-triarchy-prev]') };
+  })()`;
+}
+
+// 표시해 둔 입력창에 커서를 확실히 옮기고, 기존 글을 선택해 둔다 (새 글로 덮어쓰기 위해).
+// textarea 면 바로 글을 넣는다. 결과: 'textarea' / 'editable' (커서가 입력창 안) / 'editable-nofocus'
+function prepareInputScript(text) {
+  return `(() => {
+    const el = document.querySelector('[data-triarchy-input]');
+    if (!el) return 'no-input';
     const isMine = () => document.activeElement === el || el.contains(document.activeElement);
-    // 다른 글상자에 포커스가 있으면 빼낸다.
-    const active = document.activeElement;
-    if (active && active !== document.body && !isMine()) { try { active.blur(); } catch {} }
-    window.getSelection().removeAllRanges();
-    el.focus();
     if (!isMine()) {
-      el.click();
+      const active = document.activeElement;
+      if (active && active !== document.body) { try { active.blur(); } catch {} }
+      window.getSelection().removeAllRanges();
       el.focus();
+      if (!isMine()) { el.click(); el.focus(); }
     }
     if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
       const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value').set;
@@ -91,9 +133,17 @@ function focusInputScript(site, text, dry = false, checkBusy = true) {
     const sel = window.getSelection();
     sel.removeAllRanges();
     sel.addRange(range);
-    return 'editable';
+    return isMine() ? 'editable' : 'editable-nofocus';
   })()`;
 }
+
+// 커서가 있던 다른 글상자(답변 글상자 등)의 내용이 그대로인지 확인한다.
+const PREV_UNCHANGED_SCRIPT = `(() => {
+  const el = document.querySelector('[data-triarchy-prev]');
+  if (!el || window.__triarchyPrevText === null || window.__triarchyPrevText === undefined) return true;
+  const now = el.value !== undefined && el.tagName !== 'DIV' ? el.value : el.innerText;
+  return now === window.__triarchyPrevText;
+})()`;
 
 // 글이 표시해 둔 입력창에 들어갔는지 확인한다.
 function checkInputScript(text) {
@@ -112,28 +162,27 @@ const INPUT_FOCUSED_SCRIPT = `(() => {
   return !!el && (document.activeElement === el || el.contains(document.activeElement));
 })()`;
 
-// 표시해 둔 입력창에 직접 글을 넣는다.
-// 포커스가 그 입력창에 있을 때만 insertText 를 쓰고 (다른 상자로 새지 않게),
-// 아니면 그 입력창에 "붙여넣기" 이벤트를 직접 보낸다.
+// 표시해 둔 입력창에 직접 글을 넣는다. 커서가 그 입력창 안에 있을 때만 insertText 를 쓴다.
 function forceInsertScript(text) {
   return `(() => {
     const el = document.querySelector('[data-triarchy-input]');
     if (!el) return 'no-input';
-    const isMine = () => document.activeElement === el || el.contains(document.activeElement);
-    if (!isMine()) {
-      const active = document.activeElement;
-      if (active && active !== document.body) { try { active.blur(); } catch {} }
-      el.focus();
-    }
-    if (isMine()) {
-      const range = document.createRange();
-      range.selectNodeContents(el);
-      const sel = window.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(range);
-      document.execCommand('insertText', false, ${JSON.stringify(text)});
-      return 'inserted';
-    }
+    if (!(document.activeElement === el || el.contains(document.activeElement))) return 'not-focused';
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    document.execCommand('insertText', false, ${JSON.stringify(text)});
+    return 'inserted';
+  })()`;
+}
+
+// 커서와 상관없이, 표시해 둔 입력창에 "붙여넣기" 이벤트를 직접 보낸다.
+function pasteScript(text) {
+  return `(() => {
+    const el = document.querySelector('[data-triarchy-input]');
+    if (!el) return 'no-input';
     const dt = new DataTransfer();
     dt.setData('text/plain', ${JSON.stringify(text)});
     el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
@@ -182,15 +231,26 @@ async function pressKey(webview, keyCode, modifiers = []) {
   await sleep(30);
 }
 
+// 칸 안의 한 점을 사람이 하듯 마우스로 누른다. (좌표는 사이트 화면 기준, 확대·축소 반영)
+async function clickAt(webview, x, y) {
+  let zoom = 1;
+  try { zoom = webview.getZoomFactor() || 1; } catch {}
+  const px = Math.round(x * zoom);
+  const py = Math.round(y * zoom);
+  webview.focus();
+  webview.sendInputEvent({ type: 'mouseDown', x: px, y: py, button: 'left', clickCount: 1 });
+  webview.sendInputEvent({ type: 'mouseUp', x: px, y: py, button: 'left', clickCount: 1 });
+  await sleep(150);
+}
+
 function excludeOf(site) {
   return ANSWER_AREAS.concat(site.excludeInside || []);
 }
 
 async function hasInput(pane) {
   try {
-    const r = await pane.webview.executeJavaScript(
-      focusInputScript(pane.site, '', true, false));
-    return r === 'found';
+    const r = await pane.webview.executeJavaScript(locateInputScript(pane.site, true, false));
+    return !!r && r.status === 'found';
   } catch { return false; }
 }
 
@@ -240,24 +300,33 @@ async function sendToPane(pane, text) {
   webview.focus();
   await sleep(80);
 
-  let mode = await webview.executeJavaScript(focusInputScript(site, text));
-  if (mode === 'no-input' && await returnToChat(pane)) {
+  let found = await webview.executeJavaScript(locateInputScript(site));
+  if (found.status === 'no-input' && await returnToChat(pane)) {
     await sleep(500);
-    mode = await webview.executeJavaScript(focusInputScript(site, text));
+    found = await webview.executeJavaScript(locateInputScript(site));
   }
-  if (mode === 'busy') return { ok: false, msg: '답변을 만드는 중이라 건너뜀' };
-  if (mode === 'no-input') return { ok: false, msg: '입력창을 찾지 못함 (로그인 필요?)' };
+  if (found.status === 'busy') return { ok: false, msg: '답변을 만드는 중이라 건너뜀' };
+  if (found.status === 'no-input') return { ok: false, msg: '입력창을 찾지 못함 (로그인 필요?)' };
 
-  // GPT 버전처럼 찾은 입력창에 직접 글을 넣는다. (키 입력은 포커스를 가진 다른 편집기로 새어 나갈 수 있음)
-  if (mode === 'editable') {
-    await webview.executeJavaScript(forceInsertScript(text));
+  // 커서가 어디에 있든 (답변 글상자, 캔버스, 그 안의 iframe 등) 사람이 하듯 채팅 입력창을 마우스로 눌러
+  // 커서를 확실히 옮긴다. 그 다음에야 글을 넣는다.
+  if (found.clickable) await clickAt(webview, found.x, found.y);
+  let mode = await webview.executeJavaScript(prepareInputScript(text));
+
+  if (mode !== 'textarea') {
+    // 커서가 채팅 입력창 안에 있을 때만 insertText 로 넣는다.
+    const inserted = mode === 'editable' && await webview.executeJavaScript(forceInsertScript(text)) === 'inserted';
+    // 커서를 끝내 옮기지 못하면 (다른 글상자가 커서를 다시 가져가는 경우 등),
+    // 키 입력은 쓰지 않고 채팅 입력창에 "붙여넣기" 를 직접 보낸다.
+    if (!inserted) await webview.executeJavaScript(pasteScript(text));
     await sleep(300);
   }
-  if (!(await webview.executeJavaScript(checkInputScript(text))) && mode === 'editable') {
+  if (!(await webview.executeJavaScript(checkInputScript(text))) && mode !== 'textarea') {
     // 직접 넣기가 안 먹히는 사이트면 키보드로 한 줄씩 입력해 본다.
     // 단, 커서가 찾은 입력창 안에 있을 때만 (다른 글상자에 글이 들어가지 않도록).
-    await webview.executeJavaScript(focusInputScript(site, text, false, false));
-    if (await webview.executeJavaScript(INPUT_FOCUSED_SCRIPT)) {
+    if (found.clickable) await clickAt(webview, found.x, found.y);
+    mode = await webview.executeJavaScript(prepareInputScript(text));
+    if (mode === 'editable' && await webview.executeJavaScript(INPUT_FOCUSED_SCRIPT)) {
       const lines = text.split('\n');
       for (let i = 0; i < lines.length; i++) {
         if (i > 0) await pressKey(webview, 'Enter', ['shift']);
@@ -265,6 +334,9 @@ async function sendToPane(pane, text) {
       }
       await sleep(300);
     }
+  }
+  if (!(await webview.executeJavaScript(PREV_UNCHANGED_SCRIPT))) {
+    return { ok: false, msg: '커서가 있던 다른 글상자 내용이 바뀌어 보내지 않음 (Ctrl+Z 로 되돌리세요)' };
   }
   if (!(await webview.executeJavaScript(checkInputScript(text)))) {
     return { ok: false, msg: '채팅 입력창에 글이 들어가지 않아 보내지 않음' };

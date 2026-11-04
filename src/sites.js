@@ -42,7 +42,9 @@ const sites = [
       '#thread-bottom',
       'form:has(#prompt-textarea)',
       'form:has(button[data-testid="send-button"])',
-      'form:has(#composer-submit-button)'
+      'form:has(#composer-submit-button)',
+      'form:has(button[data-testid="composer-speech-button"])',
+      'form:has([data-testid="composer-plus-btn"])'
     ],
     // 질문 고치기 상자, 프로젝트 설명 등 팝업 창 안의 글상자는 입력창으로 고르지 않는다.
     excludeInside: [
